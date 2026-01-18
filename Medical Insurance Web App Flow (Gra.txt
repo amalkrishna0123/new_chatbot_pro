@@ -1,0 +1,272 @@
+Medical Insurance Web App Flow (Grammatically Corrected Version)
+Login & Authentication
+
+Initially, a Login Page is required.
+
+User enters their Email ID
+
+OTP verification is performed
+
+After successful verification, the user is redirected to the Welcome Landing Page
+
+Welcome Landing Page
+
+When the user enters the application, a welcome landing page is displayed.
+This page contains three main options:
+
+Get Medical Insurance
+
+Get Details
+
+Ask AI
+
+Ask AI is a normal chat interface, but the AI must:
+
+Know company and service details
+
+Know complete medical insurance steps
+
+Provide redirection links
+
+Provide support contact details
+
+Respond freely based on user instructions
+
+Chat History Rules
+
+A chat history feature is required
+
+All messages sent by the user must be stored
+
+The conversation should continue seamlessly without mismatch
+
+AI responses must always align with the conversation context
+
+Medical insurance conversations must NOT be stored unless the insurance process is fully completed
+
+Only completed medical insurance data should be stored
+
+Get Medical Insurance Flow
+
+When the user clicks Get Medical Insurance, they are redirected to the Medical Insurance Section.
+
+Rules:
+
+Only one medical insurance can be generated per Emirates ID
+
+One account can have multiple Emirates IDs
+
+A single Emirates ID cannot have multiple insurance policies
+
+Medical Insurance Section
+
+When the user enters this section:
+
+Guidelines Pop-up (Manglish)
+
+A demo guidelines list will be displayed. These can be updated later.
+
+Example guideline:
+
+Medical insurance start cheyth complete cheyyathe purath poyaal insurance stop aavum.
+
+Language & Input Options
+
+User can select a native language
+(Malayalam, Hindi, Arabic, Urdu)
+
+Voice recorder option must be available
+
+Voice input should be transcribed to text
+
+User can:
+
+Select options
+
+Type responses
+
+Use voice input
+
+Review & Correction Stage
+
+At the final stage, a Review Section must be shown
+
+It should display:
+
+User-provided data
+
+AI-extracted data
+
+User can:
+
+Verify correctness
+
+Update incorrect fields
+
+Updated data must be saved and displayed again for confirmation
+
+Medical Insurance Flow (Strict Order)
+
+“Are you looking for Medical Insurance?”
+Options: Yes / No
+
+If Yes:
+“Are you an employee or a dependent?”
+Options: Employee / Dependent
+
+If Employee:
+
+“What is your monthly income?”
+Options:
+
+Below 4000 AED
+
+4000–5000 AED
+
+Above 5000 AED
+
+Upload your valid Emirates ID
+
+If Dependent:
+
+“Which type of dependent are you?”
+Options: Spouse / Child
+
+“What is your sponsor’s monthly income?”
+Options:
+
+Below 4000 AED
+
+4000–5000 AED
+
+Above 5000 AED
+
+Upload sponsor’s valid Emirates ID
+
+Document Upload & Processing
+
+User can upload:
+
+Image files
+
+PDF files
+
+Camera-captured images (front & back)
+
+Rules:
+
+If the file contains multiple documents (passport, visa, etc.), only Emirates ID should be read
+
+Convert PDF to image if required
+
+Extract data accurately from Emirates ID image
+
+Emirates ID Data Extraction
+
+The system must read and fetch the following fields:
+
+Emirates ID Number
+
+Name
+
+Date of Birth
+
+Issuing Date
+
+Expiry Date
+
+Nationality
+
+Gender
+
+Issuing Place
+
+Occupation
+
+Employer / Family Sponsor Name
+
+After extraction, AI should ask:
+
+“Ee details correct aano? Allenkil ningalk eth field aanu incorrect?”
+
+If any field is missing:
+
+AI must identify missing fields
+
+Collect the data from the user
+
+Store and display updated data
+
+If Emirates ID is expired:
+
+The process must stop
+
+A warning message should be shown
+
+User should not be allowed to continue
+
+Mobile Number
+
+User enters mobile number
+
+UAE country code is auto-set
+
+Proper validation is required
+
+Insurance Product Display Logic
+If Issuing Place is Dubai:
+
+Salary below 4000 AED:
+
+DHA Basic – 864.00 AED (LSB)
+
+Salary 4000–5000 AED or above 5000 AED:
+
+DHA Basic – 864.00 AED (LSB)
+
+DHA Basic – 1893.00 AED (NLSB)
+
+If Issuing Place is Abu Dhabi:
+
+Salary below 4000 AED or 4000–5000 AED:
+
+No product available
+
+Salary above 5000 AED:
+
+DHA Basic – 1893.00 AED (NLSB)
+
+Product Selection Output (AI Response)
+
+When a product is selected, AI displays:
+
+Selected: DHA Basic (NLSB)
+
+DHA Basic – NLSB
+Price: 1893.00 AED
+Coverage: Medical Insurance
+URL: https://......
+
+Click the link above to view full details and start your application.
+
+Get Details Section
+
+If the user has already completed medical insurance:
+
+Full insurance details must be displayed here
+
+Data should be fetched from stored records
+
+Ask AI Section
+
+AI should:
+
+Know company details
+
+Explain medical insurance steps
+
+Provide redirection buttons
+
+Provide company contact details
+
+AI should respond freely based on user instructions
