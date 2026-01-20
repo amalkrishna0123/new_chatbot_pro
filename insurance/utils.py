@@ -72,7 +72,13 @@ class EmiratesIDExtractor:
             if response.status_code != 200:
                 return {"error": f"OCR API Error: {response.status_code}"}
             
-            return response.json()
+            try:
+                result = response.json()
+                # DEBUG: Print raw response to see why it fails
+                print(f"DEBUG: OCR API Response: {json.dumps(result)}") 
+                return result
+            except json.JSONDecodeError:
+                 return {"error": f"Invalid JSON from OCR API: {response.text}"}
             
         except Exception as e:
             logger.error(f"OCR Request Failed: {e}")

@@ -105,6 +105,15 @@ class InsuranceApplicationViewSet(viewsets.ModelViewSet):
         })
 
 
+import logging
+from .utils import EmiratesIDExtractor
+
+logger = logging.getLogger(__name__)
+
+# Max file size (5MB)
+MAX_FILE_SIZE = 5 * 1024 * 1024
+ALLOWED_CONTENT_TYPES = ['application/pdf', 'image/jpeg', 'image/png']
+
 class ProcessOCRView(APIView):
     """
     Process uploaded Emirates ID and extract data
@@ -115,80 +124,117 @@ class ProcessOCRView(APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
-        document = request.FILES.get('document')
-        application_id = request.data.get('application_id')
-        employment_type = request.data.get('employment_type', 'Employee')
-        
-        if not document:
-            return Response({
-                'success': False,
-                'message': 'No document provided'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Save document to application if application_id provided
-        if application_id:
-            try:
-                application = InsuranceApplication.objects.get(
-                    id=application_id,
-                    user=request.user
-                )
-                application.emirates_id_document = document
-                application.status = 'Pending OCR'
-                application.save()
-            except InsuranceApplication.DoesNotExist:
-                pass
-        
-        # --- REAL OCR PROCESSING ---
-        from .utils import EmiratesIDExtractor
-        extractor = EmiratesIDExtractor()
-        
-        # Helper to handle in-memory file or temporary path
         try:
+            document = request.FILES.get('document')
+            application_id = request.data.get('application_id')
+            employment_type = request.data.get('employment_type', 'Employee')
+            
+            # 1. Validation
+            if not document:
+                return Response({
+                    'success': False,
+                    'message': 'No document provided'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if document.size > MAX_FILE_SIZE:
+                return Response({
+                    'success': False,
+                    'message': 'File too large. Maximum size is 5MB.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+            # Basic content type check (can be improved with python-magic)
+            if document.content_type not in ALLOWED_CONTENT_TYPES:
+                # Fallback check on extension if content_type is generic
+                ext = document.name.split('.')[-1].lower()
+                if ext not in ['pdf', 'jpg', 'jpeg', 'png']:
+                    return Response({
+                        'success': False,
+                        'message': 'Invalid file type. Only PDF, JPG, and PNG are allowed.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+            # 2. Save document to application (Optional step, but potential failure point)
+            if application_id:
+                try:
+                    application = InsuranceApplication.objects.get(
+                        id=application_id,
+                        user=request.user
+                    )
+                    # Rewind before read/save if needed, though Django handles this mostly
+                    application.emirates_id_document = document
+                    application.status = 'Pending OCR'
+                    application.save()
+                    
+                    # IMPORTANT: Reset file pointer after save() consumed it
+                    if hasattr(document, 'seek'):
+                        document.seek(0)
+                        
+                except InsuranceApplication.DoesNotExist:
+                     logger.warning(f"Application {application_id} not found for user {request.user.id}")
+                except Exception as e:
+                    logger.error(f"Failed to save document to DB: {e}", exc_info=True)
+                    # We continue even if save fails? Or abort? 
+                    # Let's continue to give the user the extracted data at least.
+                    if hasattr(document, 'seek'):
+                        document.seek(0)
+
+            # 3. Real OCR Processing
+            extractor = EmiratesIDExtractor()
+            
+            # Ensure file pointer is at start
+            if hasattr(document, 'seek'):
+                document.seek(0)
+
             extracted_data = extractor.process_pdf(document, employment_type=employment_type)
-        except Exception as e:
-            return Response({
-                'success': False,
-                'message': f"Extraction error: {str(e)}"
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        if 'error' in extracted_data:
-             error_msg = extracted_data['error']
-             # Ensure error is a string for the frontend
-             if isinstance(error_msg, list):
-                 error_msg = ", ".join(error_msg)
+            if 'error' in extracted_data:
+                 error_msg = extracted_data['error']
+                 if isinstance(error_msg, list):
+                     error_msg = ", ".join(error_msg)
                  
-             return Response({
-                'success': False,
-                'message': error_msg
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                 logger.error(f"OCR Extraction Failed: {error_msg}")
+                 print(f"DEBUG: OCR Failed - {error_msg}") # Explicit print for user
+                 return Response({
+                    'success': False,
+                    'message': f"OCR Service Failed: {error_msg}"
+                }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        # Merge with default structure to ensure frontend doesn't break if fields are missing
-        final_data = {
-            'emirates_id': extracted_data.get('emirates_id', ''),
-            'full_name': extracted_data.get('full_name', ''),
-            'date_of_birth': extracted_data.get('date_of_birth'),
-            'issuing_date': extracted_data.get('issuing_date'),
-            'expiry_date': extracted_data.get('expiry_date'),
-            'nationality': extracted_data.get('nationality', ''),
-            'gender': extracted_data.get('gender', 'Male'), 
-            'issuing_place': extracted_data.get('issuing_place', 'Dubai'), 
-            'occupation': extracted_data.get('occupation', ''),
-            'sponsor_name': extracted_data.get('sponsor_name', '')
-        }
-        
-        serializer = OCRDataSerializer(data=final_data)
-        if serializer.is_valid():
+            # 4. Success Response
+            final_data = {
+                'emirates_id': extracted_data.get('emirates_id', ''),
+                'full_name': extracted_data.get('full_name', ''),
+                'date_of_birth': extracted_data.get('date_of_birth'),
+                'issuing_date': extracted_data.get('issuing_date'),
+                'expiry_date': extracted_data.get('expiry_date'),
+                'nationality': extracted_data.get('nationality', ''),
+                'gender': extracted_data.get('gender', 'Male'), 
+                'issuing_place': extracted_data.get('issuing_place', 'Dubai'), 
+                'occupation': extracted_data.get('occupation', ''),
+                'sponsor_name': extracted_data.get('sponsor_name', '')
+            }
+            
+            serializer = OCRDataSerializer(data=final_data)
+            if serializer.is_valid():
+                return Response({
+                    'success': True,
+                    'message': 'Document processed successfully',
+                    'data': serializer.validated_data
+                })
+            else:
+                logger.warning(f"Partial OCR data: {serializer.errors}")
+                return Response({
+                    'success': True, 
+                    'message': 'Partial data extracted. Please map manually.',
+                    'data': final_data
+                })
+
+        except Exception as e:
+            # Catch-all for unexpected crashes (500)
+            logger.critical(f"ProcessOCRView Critical Error: {str(e)}", exc_info=True)
+            print(f"DEBUG CRITICAL ERROR: {str(e)}") # Explicit print
             return Response({
-                'success': True,
-                'message': 'Document processed successfully',
-                'data': serializer.validated_data
-            })
-        else:
-            return Response({
-                'success': True, 
-                'message': 'Partial data extracted. Please map manually.',
-                'data': final_data
-            })
+                'success': False,
+                'message': 'An unexpected error occurred while processing your document. Please try again or enter details manually.'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class GetProductRecommendationsView(APIView):
