@@ -14,6 +14,7 @@ from .serializers import (
     UserSerializer,
     UserProfileSerializer
 )
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class SendOTPView(APIView):
@@ -133,14 +134,18 @@ class VerifyOTPView(APIView):
             UserProfile.objects.create(user=user)
         
         # Login user
-        login(request, user)
-        
+        refresh = RefreshToken.for_user(user)
+
         return Response({
             'success': True,
             'message': 'Login successful',
             'user': UserSerializer(user).data,
+            'access_token': str(refresh.access_token),
+            'refresh_token': str(refresh),
+            'expires_in_minutes': 60,
             'is_new_user': created
         }, status=status.HTTP_200_OK)
+
 
 
 class LogoutView(APIView):

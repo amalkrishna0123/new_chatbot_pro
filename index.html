@@ -413,7 +413,13 @@
                     class="bg-white p-8 rounded-[32px] shadow-soft border border-white/20 hover:border-brand-300 transition-all cursor-pointer hover:-translate-y-1">
                     <div
                         class="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 mb-6">
-                        <i data-lucide="sparkles" class="w-6 h-6"></i>
+                        <!-- <i data-lucide="sparkles" class="w-6 h-6"></i> -->
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="size-6">
+                            <path fill-rule="evenodd"
+                                d="M9 4.5a.75.75 0 0 1 .721.544l.813 2.846a3.75 3.75 0 0 0 2.576 2.576l2.846.813a.75.75 0 0 1 0 1.442l-2.846.813a3.75 3.75 0 0 0-2.576 2.576l-.813 2.846a.75.75 0 0 1-1.442 0l-.813-2.846a3.75 3.75 0 0 0-2.576-2.576l-2.846-.813a.75.75 0 0 1 0-1.442l2.846-.813A3.75 3.75 0 0 0 7.466 7.89l.813-2.846A.75.75 0 0 1 9 4.5ZM18 1.5a.75.75 0 0 1 .728.568l.258 1.036c.236.94.97 1.674 1.91 1.91l1.036.258a.75.75 0 0 1 0 1.456l-1.036.258c-.94.236-1.674.97-1.91 1.91l-.258 1.036a.75.75 0 0 1-1.456 0l-.258-1.036a2.625 2.625 0 0 0-1.91-1.91l-1.036-.258a.75.75 0 0 1 0-1.456l1.036-.258a2.625 2.625 0 0 0 1.91-1.91l.258-1.036A.75.75 0 0 1 18 1.5ZM16.5 15a.75.75 0 0 1 .712.513l.394 1.183c.15.447.5.799.948.948l1.183.395a.75.75 0 0 1 0 1.422l-1.183.395c-.447.15-.799.5-.948.948l-.395 1.183a.75.75 0 0 1-1.422 0l-.395-1.183a1.5 1.5 0 0 0-.948-.948l-1.183-.395a.75.75 0 0 1 0-1.422l1.183-.395c.447-.15.799-.5.948-.948l.395-1.183A.75.75 0 0 1 16.5 15Z"
+                                clip-rule="evenodd" />
+                        </svg>
+
                     </div>
                     <h3 class="font-bold text-lg text-slate-800">Ask AI</h3>
                     <p class="text-xs text-slate-400 mt-2 font-medium uppercase tracking-wide">24/7 Support Assistant
@@ -512,6 +518,10 @@
                         <i data-lucide="alert-triangle" class="w-4 h-4 flex-none"></i>
                         Verify details match Emirates ID to avoid rejection.
                     </div>
+                    <button id="review-modal-cancel" onclick="cancelReview()"
+                        class="w-full md:w-auto px-8 py-4 bg-slate-100 text-slate-500 rounded-xl font-bold text-sm hover:bg-slate-200 transition-all">
+                        Close
+                    </button>
                     <button id="review-modal-confirm" onclick="confirmReview()"
                         class="w-full md:w-auto px-8 py-4 btn-gold rounded-xl font-bold text-sm shadow-xl">
                         Confirm & Return to Chat
@@ -644,6 +654,8 @@
 
         // --- API CONFIG ---
         const API_BASE = 'http://127.0.0.1:8000/api';
+        // const API_BASE = 'https://api.keralahome.in/api';
+
 
         // --- TRANSLATIONS ---
         const translations = {
@@ -1097,6 +1109,16 @@
             policies: []
         };
 
+        function authHeaders(extra = {}) {
+            const token = localStorage.getItem('access_token');
+            const headers = { ...extra };
+            if (token && token !== 'undefined' && token !== 'null') {
+                headers['Authorization'] = `Bearer ${token}`;
+            }
+            return headers;
+        }
+
+
         function getCurrentStream() {
             return state.mode === 'ai'
                 ? document.getElementById('ai-chat-stream')
@@ -1120,22 +1142,49 @@
         }
 
         // --- API HELPER ---
+        // async function apiCall(endpoint, method = 'GET', data = null, isFileUpload = false) {
+        //     const options = {
+        //         method: method,
+        //         credentials: 'include', // Important for cookies/session
+        //         headers: {
+        //             'X-CSRFToken': getCookie('csrftoken') // Add CSRF Token
+        //         }
+        //     };
+
+        //     if (data) {
+        //         if (isFileUpload) {
+        //             options.body = data; // FormData content-type is auto-set
+        //         } else {
+        //             options.headers['Content-Type'] = 'application/json';
+        //             options.body = JSON.stringify(data);
+        //         }
+        //     }
+
+        //     try {
+        //         const response = await fetch(`${API_BASE}${endpoint}`, options);
+        //         const result = await response.json();
+        //         return result;
+        //     } catch (error) {
+        //         console.error('API Error:', error);
+        //         showAlert('error', t('connection_error_title'), t('connection_error_msg'));
+        //         return { success: false, message: 'Network or Server Error' };
+        //     }
+        // }
+
         async function apiCall(endpoint, method = 'GET', data = null, isFileUpload = false) {
+            const headers = authHeaders();
+
+            if (!isFileUpload) {
+                headers['Content-Type'] = 'application/json';
+            }
+
             const options = {
-                method: method,
-                credentials: 'include', // Important for cookies/session
-                headers: {
-                    'X-CSRFToken': getCookie('csrftoken') // Add CSRF Token
-                }
+                method,
+                headers
             };
 
             if (data) {
-                if (isFileUpload) {
-                    options.body = data; // FormData content-type is auto-set
-                } else {
-                    options.headers['Content-Type'] = 'application/json';
-                    options.body = JSON.stringify(data);
-                }
+                options.body = isFileUpload ? data : JSON.stringify(data);
             }
 
             try {
@@ -1145,9 +1194,10 @@
             } catch (error) {
                 console.error('API Error:', error);
                 showAlert('error', t('connection_error_title'), t('connection_error_msg'));
-                return { success: false, message: 'Network or Server Error' };
+                return { success: false };
             }
         }
+
 
         // --- CUSTOM UI ALERTS ---
         let alertPromiseResolve = null;
@@ -1214,15 +1264,27 @@
 
         // --- AUTH CHECK ---
         async function checkAuth() {
-            const res = await apiCall('/auth/check/');
-            if (res.authenticated) {
-                state.user = res.user;
+            const token = localStorage.getItem('access_token');
+
+            if (token) {
+                // Fetch User Details
+                try {
+                    const res = await apiCall('/auth/me/');
+                    if (res.success) {
+                        state.user = res.user;
+                        updateUserHeader();
+                    }
+                } catch (e) {
+                    console.error("Auth check failed", e);
+                }
+
                 showView('view-landing');
-                fetchPolicies(); // Pre-fetch policies
+                fetchPolicies();
             } else {
                 showView('view-login');
             }
         }
+
 
         // --- NAVIGATION ---
         function showView(viewId) {
@@ -1301,16 +1363,17 @@
             showView('view-landing');
         }
 
-        async function logout() {
-            showAlert('confirm', t('logout_q'), t('logout_msg'), async (confirmed) => {
+        function logout() {
+            showAlert('confirm', t('logout_q'), t('logout_msg'), (confirmed) => {
                 if (confirmed) {
-                    await apiCall('/auth/logout/', 'POST');
+                    localStorage.removeItem('access_token');
                     state.user = null;
-                    showView('view-login');
                     resetLogin();
+                    showView('view-login');
                 }
             });
         }
+
 
         // --- LOGIN ---
         async function sendOTP() {
@@ -1361,6 +1424,7 @@
             btn.disabled = false;
 
             if (res.success) {
+                localStorage.setItem('access_token', res.access_token);
                 state.user = res.user;
                 showView('view-landing');
                 fetchPolicies();
@@ -1909,6 +1973,7 @@
             document.getElementById('review-modal-badge').innerText = t('extracted_label');
             document.getElementById('review-modal-notice').innerHTML = `<i data-lucide="alert-triangle" class="w-4 h-4 flex-none"></i> ${t('verify_notice')}`;
             document.getElementById('review-modal-confirm').innerText = t('confirm_btn');
+            document.getElementById('review-modal-cancel').innerText = t('close_btn');
 
             const createField = (key, label, type = 'text', readonly = false) => `
                 <div class="group">
@@ -1975,6 +2040,13 @@
             lucide.createIcons();
         }
 
+        function cancelReview() {
+            document.getElementById('view-review').classList.add('hidden');
+            document.body.classList.remove('modal-open');
+            addChatBubble("Review cancelled. Please re-upload.", 'bot');
+            askUpload(); // Re-trigger upload flow
+        }
+
         async function confirmReview() {
             // Harvest Data
             const data = state.insuranceData;
@@ -2002,8 +2074,27 @@
                 return;
             }
 
-            if (!data.mobile) {
-                showAlert('warning', t('missing_info'), t('enter_mobile'));
+            // Enhanced Validation per user request
+            const requiredFields = ['name', 'eid', 'nationality', 'issuingPlace', 'expiry', 'gender', 'occupation', 'sponsor_name'];
+            // Check for empty strings or null
+            const missing = requiredFields.filter(f => !data[f] || (typeof data[f] === 'string' && data[f].trim() === ''));
+
+            if (missing.length > 0) {
+                showAlert('warning', t('missing_info'), t('req_missing'));
+                return;
+            }
+
+            // Mobile Validation
+            const cleanMobile = data.mobile.replace(/\D/g, ''); // Remove non-digits
+
+            // Validation Rules:
+            // 1. Must be 9 digits (after country code +971)
+            // 2. Cannot be all zeros
+            // 3. Must start with 5 (standard UAE mobile prefix)
+            const isValidMobile = /^5\d{8}$/.test(cleanMobile) && !/^0+$/.test(cleanMobile);
+
+            if (!isValidMobile) {
+                showAlert('warning', t('missing_info'), "Please enter a valid 9-digit UAE mobile number starting with 5 (e.g., 501234567).");
                 return;
             }
 
@@ -2176,7 +2267,7 @@
                             <div class="flex justify-between text-sm mb-1"><span>${t('policy_no')}:</span> <span class="font-mono font-bold">${policy.policy_number}</span></div>
                             <div class="flex justify-between text-sm"><span>${t('premium')}:</span> <span class="font-bold">AED ${policy.premium_amount}</span></div>
                         </div>
-                        <button onclick="window.location.href='#'" class="w-full bg-white text-emerald-600 font-bold py-3 rounded-xl text-xs uppercase tracking-wider hover:bg-emerald-50 transition-colors">
+                        <button onclick="window.location.href='http://google.com/'" class="w-full bg-white text-emerald-600 font-bold py-3 rounded-xl text-xs uppercase tracking-wider hover:bg-emerald-50 transition-colors">
                             ${t('continue_btn')}
                         </button>
                     </div>
@@ -2247,32 +2338,44 @@
             const policyCount = state.policies.length;
             const userName = state.user ? state.user.full_name : 'Guest';
 
-            const systemPrompt = `You are "Aura", the premium AI Guide for the Medical Insurance Portal.
-            Your purpose is to assist users like ${userName} with medical insurance applications and support.
-            
-            CURRENT CONTEXT:
-            - User Name: ${userName}
-            - Current Application Status: ${appStatus}
-            - Number of Active Policies: ${policyCount}
-            - Preferred Language: ${currentLang}
+            const systemPrompt = `You are "Gia", the helpful and concise AI Guide for the Medical Insurance Portal.
 
-            OUR PRODUCTS (DHA COMPLIANT):
-            - DHA Basic (LSB): For low salary brackets (< 4000 AED). Premium: 864 AED.
-            - DHA Basic (NLSB): For non-low salary brackets (>= 4000 AED). Premium: 1893 AED.
+                CONTEXT:
+                - User: ${userName}
+                - Status: ${appStatus}
+                - Active Policies: ${policyCount}
 
-            STRICT APP RULES:
-            1. Respond ONLY regarding this medical insurance portal. Avoid general life/technical advice.
-            2. For Father/Family insurance: Explain they can start a new journey for them by selecting "Dependent" as the application type.
-            3. Insurance Flow: (1) Language -> (2) Income/Type -> (3) Emirates ID Scan -> (4) Review -> (5) Plan Selection -> (6) Payment.
-            4. If the user asks general questions, politely redirect them back to insurance topics.
-            5. ALWAYS use the ${currentLang} language.
+                YOUR BEHAVIORAL RULES:
+                1. **GREETING ETIQUETTE (CRITICAL):**
+                - If the user says "Hey", "Hi", "Hello", or "Hy", simply reply with a friendly greeting and ask how you can help. 
+                - **DO NOT** ask for salary or visa location until they specifically ask about insurance plans, prices, or starting an application.
 
-            ACTIONABLE BUTTONS (Include these tags for key moments):
-            - To start a new/father's application: [[BUTTON:${t('yes_start')}|action:flow]]
-            - To go to Dashboard: [[BUTTON:${t('return_dashboard')}|action:landing]]
-            - To view current policies: [[BUTTON:${t('user_details_label')}|action:portfolio]]
+                2. **LANGUAGE ADAPTABILITY:**
+                - You are multilingual. If the user speaks a different language (e.g., Malayalam, Arabic) or asks to switch, **reply in that language immediately**.
 
-            Format: Use professional headers, bullet points, and emojis (🛡️, 🚀, ✅).`;
+                3. **DATA COLLECTION TRIGGER:**
+                - Only ask "Where is your visa issued?" and "What is your salary?" IF the user asks for quotes, prices, or "which plan is for me?".
+
+                4. **PRODUCT LOGIC (STRICT):**
+                - **Dubai Visa:** * Salary < 4000: DHA Basic LSB (864 AED).
+                    * Salary >= 4000: Choice of DHA Basic LSB (864 AED) OR DHA Basic NLSB (1893 AED).
+                - **Abu Dhabi Visa:**
+                    * Salary > 5000: DHA Basic NLSB (1893 AED).
+                    * Salary <= 5000: No products available.
+
+                5. **CONCISENESS:**
+                - Keep replies short. If a user asks a question, answer it directly. Provide buttons only when a transition is natural (e.g., after explaining a process).
+
+                SCOPE & SUPPORT:
+                - **In Scope:** Insurance flows, family/dependent apps (select "Dependent" type), policy status.
+                - **Out of Scope:** Non-insurance topics or technical bugs. 
+                * For these: 📞 800-MED-HELP | 📧 support@medicalportal.ae
+
+                ACTION BUTTONS:
+                - Start App: [[BUTTON:${t('yes_start')}|action:flow]]
+                - Dashboard: [[BUTTON:${t('return_dashboard')}|action:landing]]
+                - Policies: [[BUTTON:${t('user_details_label')}|action:portfolio]]
+            `;
 
             // Prep messages for Chat Completions (OpenAI style)
             const messages = [
