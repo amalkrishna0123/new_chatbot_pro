@@ -27,6 +27,7 @@ urlpatterns = [
     # API endpoints
     path('api/auth/', include('authentication.urls')),
     path('api/insurance/', include('insurance.urls')),
+    path("api/", include("document_tests.urls")),
     
     # Serve the main HTML page from root directory
     path('', lambda request: serve(request, 'index.html', document_root=Path(settings.BASE_DIR))),
