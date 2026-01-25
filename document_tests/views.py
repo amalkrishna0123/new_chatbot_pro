@@ -33,8 +33,10 @@ def passport_upload(request):
             return JsonResponse({"error": "No file uploaded"}, status=400)
 
         # Prefer env, fall back to your test keys so nothing breaks while you tinker
-        api_key = "md_0v6CgIEbeCBkiGlyrM-PZ6mL2CkSGF7Pxu28o2P27E0"
-        model_id = "703498b8-dede-4310-8a5b-fdaf829232be"
+        # api_key = "md_0v6CgIEbeCBkiGlyrM-PZ6mL2CkSGF7Pxu28o2P27E0"
+        api_key = "md_8a723Te9lQaJXaCMJeBBa860F_sVH4XzXF_kfxoBCmo"
+        # model_id = "703498b8-dede-4310-8a5b-fdaf829232be"
+        model_id = "941c8dd9-8ab5-4192-ad7a-7311952095e0"
 
         client = ClientV2(api_key)
         params = InferenceParameters(model_id=model_id, confidence=True)
