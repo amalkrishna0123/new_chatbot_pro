@@ -26,11 +26,15 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 @authentication_classes([])   # ⬅️ disable auth
 @permission_classes([AllowAny])
 def passport_upload(request):
+    print(f"--- [PASSPORT] Request Received ---")
     
     try:
         uploaded = request.FILES.get("file")
         if not uploaded:
+            print(f"--- [PASSPORT] Error: No file uploaded ---")
             return JsonResponse({"error": "No file uploaded"}, status=400)
+
+        print(f"--- [PASSPORT] File: {uploaded.name} ({uploaded.size} bytes) ---")
 
         # Prefer env, fall back to your test keys so nothing breaks while you tinker
         # api_key = "md_0v6CgIEbeCBkiGlyrM-PZ6mL2CkSGF7Pxu28o2P27E0"
@@ -45,7 +49,9 @@ def passport_upload(request):
         input_source = BytesInput(uploaded.read(), filename=uploaded.name)
 
         # OCR
+        print(f"--- [PASSPORT] Sending to Mindee API... ---")
         response = client.enqueue_and_get_inference(input_source, params)
+        print(f"--- [PASSPORT] Mindee Response Received ---")
         fields = response.inference.result.fields
 
         # Helpers -------------------------------------------------------------
@@ -115,6 +121,8 @@ def passport_upload(request):
 
         # --------------------------------------------------------------------
 
+        print(f"--- [PASSPORT] Extracting fields... ---")
+
         passport_number = get_any(["passport_number", "PassportNumber", "Document Number"])
         dob = normalize_date(get_any(["date_of_birth", "Date of Birth", "DOB"]))
 
@@ -130,12 +138,15 @@ def passport_upload(request):
 
         # Fallback via MRZ if any name is missing
         if not given_name or not surname:
+            print(f"--- [PASSPORT] Trying MRZ fallback for names... ---")
             mrz1 = get_any(["mrz_line_1", "mrz1", "MRZ Line 1"])
             parsed_surname, parsed_given = parse_names_from_mrz(mrz1)
             surname = surname or parsed_surname
             given_name = given_name or parsed_given
 
         full_name = _collapse_spaces(f"{given_name or ''} {surname or ''}")
+
+        print(f"--- [PASSPORT] Extraction complete. Passport: {passport_number}, Name: {full_name} ---")
 
         return JsonResponse({
             "fields": {
@@ -153,6 +164,7 @@ def passport_upload(request):
 
     except Exception as e:
         # Do not leak stack traces to clients
+        print(f"--- [PASSPORT] ERROR: {e} ---")
         return JsonResponse({"error": f"OCR failed: {str(e)}"}, status=500)
 
 
@@ -241,19 +253,80 @@ def parse_fields(text):
             # Stop if we hit common field names (occupation, date, etc.)
             name_val = re.split(r'(?i)\s+(?:Occupation|Date|Nationality|Expiry|Issuing|Sex|Gender|Employer|Name\s*$)', name_val)[0].strip()
             
-            # STRICT VALIDATION: Reject if it contains occupation-related terms
+            # STRICT VALIDATION check
             name_lower = name_val.lower()
             if any(term in name_lower for term in invalid_name_terms):
-                continue  # Skip this match, try next pattern
+                continue
             
-            # Additional validation
-            if not re.search(r'\d{4,}', name_val):  # Don't use if it has long number sequences
-                if len(name_val.split()) >= 2:  # Name should have at least 2 words
-                    # Ensure it looks like a proper name (has capital letters)
-                    if re.search(r'[A-Z][a-z]', name_val):
-                        data['name'] = name_val
-                        # data.setdefault('raw_name_candidates', []).append(name_val)
-                        break
+            if re.search(r'\d{4,}', name_val):
+                continue
+
+            # --- MULTI-LINE CHECK ---
+            # Try to find where this match occurred in the raw text lines
+            # This is heuristics since we extracted via regex on full text
+            
+            # 1. Normalize lines again
+            lines = [l.strip() for l in normalized.splitlines() if l.strip()]
+            
+            # 2. Find the line index containing our match
+            start_idx = -1
+            for idx, line in enumerate(lines):
+                if name_val in line:
+                    start_idx = idx
+                    break
+            
+            # --- LOOK BEHIND CHECK (New) ---
+            # Scenario: 
+            # Ismaeel Sajaad Muhammad Sajaad Manakkat
+            # Name: Thekke Peedikayil
+            if start_idx > 0:
+                prev_line = lines[start_idx - 1]
+                # Check if previous line looks like a name part (Uppercase, no digits, no keywords)
+                pl_upper = re.sub(r'[^A-Z]', '', prev_line)
+                alphanum_ratio = len(pl_upper) / len(prev_line.replace(' ', '')) if prev_line.strip() else 0
+                
+                is_prev_part = (
+                    len(prev_line) > 3 and
+                    not any(ch.isdigit() for ch in prev_line) and
+                    not any(term in prev_line.lower() for term in invalid_name_terms + stopwords) and
+                    alphanum_ratio > 0.8
+                )
+                
+                if is_prev_part:
+                    name_val = prev_line + " " + name_val
+
+            # --- LOOK AHEAD CHECK ---
+            # 3. Look ahead for continuation lines
+            if start_idx != -1 and start_idx + 1 < len(lines):
+                # Check next 1-2 lines
+                for offset in range(1, 3):
+                    if start_idx + offset >= len(lines): break
+                    
+                    next_line = lines[start_idx + offset]
+                    
+                    # Validation for continuation line:
+                    # - Must be uppercase (Emirates ID names are typically uppercase)
+                    # - No digits
+                    # - No labels
+                    # - No special characters indicating a new section
+                    
+                    nl_upper = re.sub(r'[^A-Z]', '', next_line) # Only letters
+                    alphanum_ratio = len(nl_upper) / len(next_line.replace(' ', '')) if next_line.strip() else 0
+                    
+                    is_continuation = (
+                        len(next_line) > 3 and
+                        not any(ch.isdigit() for ch in next_line) and
+                        not any(term in next_line.lower() for term in invalid_name_terms + stopwords) and
+                        alphanum_ratio > 0.8  # mostly letters
+                    )
+                    
+                    if is_continuation:
+                        name_val += " " + next_line
+                    else:
+                        break # Stop if a line doesn't match
+
+            data['name'] = name_val
+            break
 
     # 3) Fallback name detection if not found
     if 'name' not in data or not data['name']:
@@ -386,9 +459,24 @@ def parse_fields(text):
             data["issuing_date"] = format_date(all_dates[1])
 
     # 6) Nationality
-    m = re.search(r'(?i)(?:Nationality|الجنسية)\s*[:\-]?\s*([^\n\r]{2,80})', raw)
+    # Improved pattern: Capture letters, spaces, parens (for "United Kingdom (UK)")
+    m = re.search(r'(?i)(?:Nationality|الجنسية)\s*[:\-]?\s*([A-Za-z\s\(\)\-]{3,60})', raw)
     if m:
-        data['nationality'] = m.group(1).strip()
+        nat_val = m.group(1).strip()
+        
+        # Stop at common next-field headers that might have been captured
+        # Split by: Issuing, Date, Expiry, Sex, Gender, ID, Number, Employer, Occupation
+        stop_pattern = r'(?i)\s+(?:Issuing|Issue|Date|Expiry|Sex|Gender|ID|No|Number|Employer|Occupation|Place)'
+        
+        # Take the first part before any of these keywords
+        clean_nat = re.split(stop_pattern, nat_val)[0].strip()
+        
+        # Double check: split by double spaces if OCR put another field on same line (e.g. SOMALIA  01/01/2025)
+        parts = re.split(r'\s{2,}', clean_nat)
+        if parts:
+            data['nationality'] = parts[0].strip()
+        else:
+            data['nationality'] = clean_nat
 
     # 7) Sex / Gender
     gender_patterns = [
@@ -559,151 +647,314 @@ from .models import UAEDocumentVisa
 
 
 def parse_uae_visa_fields(text: str):
-
+    """
+    Robust field parser for UAE Visa text.
+    Refactored to handle file numbers, strict date validation, and cleaner name extraction.
+    """
     data = {}
     if not text:
         return data
 
     raw = text
+    # Normalize whitespace but keep newlines for line-based processing
     t = re.sub(r'[ \t]+', ' ', raw).replace('\r', '\n')
 
     def clean(v):
+        if not v:
+            return None
         v = v.strip()
         v = re.sub(r'^[\:\-\|\/\s]+', '', v)
         v = re.sub(r'[\s\|]+$', '', v)
         return v.strip()
 
-    # ID Number
-    id_match = re.search(r'(?i)(?:ID\s*Number|ID\s*No\.?|رقم\s*الهوية)\s*[:\-]?\s*([0-9\-]{10,25})', t)
-    if not id_match:
-        id_match = re.search(r'\b(784\d{9,12})\b', t)
-    if id_match:
-        data['id_number'] = clean(id_match.group(1))
+    def validate_and_parse_date(date_str):
+        if not date_str:
+            return None
+        # Normalize separators
+        ds = date_str.replace('-', '/').replace('.', '/')
+        parts = ds.split('/')
+        if len(parts) != 3:
+            return None
+        
+        y, m, d = None, None, None
+        
+        p0, p1, p2 = parts[0], parts[1], parts[2]
+        
+        # Try to detect format: YYYY/MM/DD or DD/MM/YYYY
+        try:
+            if len(p0) == 4:
+                # YYYY/MM/DD
+                y, m, d = int(p0), int(p1), int(p2)
+            elif len(p2) == 4:
+                # DD/MM/YYYY
+                d, m, y = int(p0), int(p1), int(p2)
+            else:
+                return None
+            
+            # Strict Validation
+            if not (1 <= m <= 12):
+                return None
+            if not (1 <= d <= 31):
+                return None
+            if not (1950 <= y <= 2100):
+                return None
 
-    # File Number
-    file_match = re.search(r'(?i)(?:File\s*Number|File\s*No\.?|رقم\s*الملف)\s*[:\-]?\s*([0-9\/\-]{8,25})', t)
+            # Return date object for logic/sorting
+            from datetime import date
+            return date(y, m, d)
+        except ValueError:
+            return None
+
+    # ---------------- File Number ----------------
+    # Pattern: 201/2013/3/43406 (3 or 4 parts)
+    file_match = re.search(r'\b(\d{3,5}[/-]\d{4}[/-]\d{1,2}[/-]\d{4,8})\b', t)
+    
+    # Fallback for 3-part file number: 201/2024/3924425
     if not file_match:
-        file_match = re.search(r'(\b\d{3,5}\/\d{4}\/\d{5,8}\b)', t)
+        file_match = re.search(r'\b(\d{3,5}[/-]\d{4}[/-]\d{5,9})\b', t) 
+    
     if file_match:
         data['file_number'] = clean(file_match.group(1))
 
+    # ---------------- ID Number ----------------
+    # 784-1980-1234567-1
+    id_match = re.search(r'\b(784[/-]\d{4}[/-]\d{7}[/-]\d)\b', t)
+    if not id_match:
+         # Fallback: 784198012345671 (Unformatted 15 digits)
+        id_match = re.search(r'\b(784\d{12})\b', t)
+
+    if id_match:
+        data['id_number'] = clean(id_match.group(1))
+
+    # ---------------- UID No ----------------
+    uid_match = re.search(r'(?i)(?:UID|Unified\s*Number|الرقم\s*الموحد)\s*[:\-]?\s*(\d{8,15})', t)
+    if uid_match:
+        data['uid_no'] = clean(uid_match.group(1))
+
     # ---------------- Passport Number ----------------
-    pass_match = re.search(
-        r'(?i)(?:Passport\s*No\.?|Passport\s*Number|رقم\s*الجواز)\s*[:\-]?\s*((?=[A-Z0-9]*\d)[A-Z0-9]{5,12})',
-        t
-    )
+    # Strict regex: Must have at least one digit to avoid matching names like "ABHINAV"
+    # Look for labeled passport number
+    pass_match = re.search(r'(?i)(?:Passport\s*No|Passport\s*Number|رقم\s*الجواز)\s*[:\-]?\s*([A-Z0-9]*\d[A-Z0-9]*)', t)
     passport_val = None
+    
     if pass_match:
         passport_val = clean(pass_match.group(1))
-    else:
-        # Fallback: any token 6–12 chars with letters+digits
-        candidates = re.findall(r'\b(?=[A-Z0-9]*\d)[A-Z0-9]{6,12}\b', t)
-        for val in candidates:
-            if re.match(r'^[A-Z][A-Z0-9]*\d', val):
-                passport_val = val
-                break
-        if not passport_val and candidates:
+    
+    # Fallback: look for common passport pattern (Letter + 6-9 digits) isolated
+    if not passport_val:
+        candidates = re.findall(r'\b([A-Z][0-9]{6,9})\b', t)
+        if candidates:
             passport_val = candidates[0]
+            
+    # Fallback 2: Split passport number (e.g. "V79541 17") due to OCR spaces
+    if not passport_val:
+        # Match Letter, 5-8 digits, space, 1-3 digits. Total digits approx 6-9.
+        split_match = re.search(r'\b([A-Z]\d{5,8})\s+(\d{1,3})\b', t)
+        if split_match:
+            # Recombine parts
+            combined = split_match.group(1) + split_match.group(2)
+            # Validation: Total length 7-12 chars
+            if 7 <= len(combined) <= 12:
+                passport_val = combined
 
     if passport_val:
         data['passport_no'] = passport_val
 
-    # ---------------- UID No (if present) ----------------
-    uid_match = re.search(r'(?i)(?:UID\s*(?:No\.?|Number)?|Unified\s*Number|الرقم\s*الموحد)\s*[:\-]?\s*([0-9]{8,15})', t)
-    if uid_match:
-        data['uid_no'] = clean(uid_match.group(1))
+    # ---------------- Dates ----------------
+    # Regex for dates: YYYY/MM/DD or DD/MM/YYYY
+    date_pattern = r'\b(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{4})\b'
+    
+    # We scan lines to associate dates with labels
+    lines = t.splitlines()
+    found_issue = False
+    found_expiry = False
+
+    for line in lines:
+        line_clean = line.strip()
+        # Issue Date
+        if not found_issue and re.search(r'(?i)(Date\s*of\s*Issue|Issuing\s*Date|Issue\s*Date|تاريخ\s*الإصدار)', line_clean):
+            # Look for date in this line or next line
+            d_match = re.search(date_pattern, line_clean)
+            if d_match:
+                 vd = validate_and_parse_date(d_match.group(0))
+                 if vd:
+                     data['issuing_date'] = vd
+                     found_issue = True
+
+        # Expiry Date
+        if not found_expiry and re.search(r'(?i)(Date\s*of\s*Expiry|Expiry\s*Date|Expires|Valid\s*Until|تاريخ\s*الانتهاء)', line_clean):
+            d_match = re.search(date_pattern, line_clean)
+            if d_match:
+                vd = validate_and_parse_date(d_match.group(0))
+                if vd:
+                    data['expiry_date'] = vd
+                    found_expiry = True
+
+    # Fallback: Find all valid dates and heuristically assign
+    if not found_issue or not found_expiry:
+        all_dates_raw = re.findall(date_pattern, t)
+        valid_dates = []
+        for d in all_dates_raw:
+            # Skip if this "date" is actually part of the file number we found
+            if 'file_number' in data and data['file_number'] and d in data['file_number']:
+                continue
+            
+            vd = validate_and_parse_date(d)
+            if vd:
+                valid_dates.append(vd)
+        
+        # Sort chronologically (date objects sort correctly)
+        valid_dates.sort() 
+
+        if valid_dates:
+            # Usually DOB is oldest (if present), Issue is middle, Expiry is future
+            
+            if not found_issue and len(valid_dates) >= 1:
+                # If expecting issue and expiry, assign earliest to issue, latest to expiry
+                if len(valid_dates) >= 2:
+                     if 'dob' not in data: 
+                         data['issuing_date'] = valid_dates[0]
+                         data['expiry_date'] = valid_dates[-1]
+
+            if not found_expiry and valid_dates:
+                data['expiry_date'] = valid_dates[-1] # Valid until is usually the latest date
+
+    # Final Formatting: Convert date objects to DD-MMM-YYYY strings
+    from datetime import date
+    for k, v in data.items():
+        if isinstance(v, date):
+            data[k] = v.strftime("%d-%b-%Y")
 
     # ---------------- Name (Visa Holder) ----------------
+    # Strategy: 
+    # 1. Look for explicit Label "Name:" regex
+    # 2. Look for large uppercase block not containing excluded keywords
+    # 3. Support multi-line names (append next line if it looks like a name part)
     
     name_val = None
     
-    # Pattern 1: Name appears after passport number line, before profession keywords
-    # Match 2-4 uppercase words that form a person's name
-    name_match = re.search(
-        r'(?i)(?:Passport\s*No\.?|رقم\s*الجواز)[^\n]*\n\s*([A-Z][A-Z\s]{8,60}?)\s*(?=\n|HOUSE\s*WIFE|Profession|Employer|المهنة|الوظيفة)',
-        t
-    )
+    # 1. Explicit Label
+    name_label_match = re.search(r'(?i)(?:Name|Holder\'s\s*Name|الاسم)\s*[:\-]\s*([A-Z\s]{5,100})', t)
+    if name_label_match:
+        name_val = name_label_match.group(1)
     
-    if name_match:
-        name_val = clean(name_match.group(1))
-    
-    # Pattern 2: Look for Arabic name pattern followed by English name
+    # 2. Heuristic: Find name block
     if not name_val:
-        name_match = re.search(
-            r'[\u0600-\u06FF\s]+\n\s*([A-Z][A-Z\s]{8,60}?)\s*(?=\n|HOUSE\s*WIFE|Profession)',
-            t
-        )
-        if name_match:
-            name_val = clean(name_match.group(1))
-    
-    # Pattern 3: Find uppercase name before profession keywords
-    if not name_val:
-        name_match = re.search(
-            r'\b([A-Z]{3,}(?:\s+[A-Z]{3,}){1,3})\s*(?=\n|HOUSE\s*WIFE|Profession|Employer)',
-            t
-        )
-        if name_match:
-            name_val = clean(name_match.group(1))
-    
-    # Clean and validate the extracted name
+        excluded = [
+            'PASSPORT', 'UNITED', 'ARAB', 'EMIRATES', 'DUBAI', 'ABU', 'DHABI', 'VISA', 'RESIDENCE', 
+            'PROFESSION', 'EMPLOYER', 'SPONSOR', 'SEX', 'MOI', 'MINISTRY', 'ACCOMPANID', 'ACCOMPANIED', 
+            'PLACE', 'ISSUE', 'STUDENT', 'WORK', 'ALLOWED', 'FAMILY', 'HEAD', 'MANAGER', 'ENGINEER', 
+            'DIRECTOR', 'PARTNER', 'INVESTOR', 'WIFE', 'HUSBAND', 'DAUGHTER', 'SON', 'HOUSE'
+        ]
+        
+        # We need a robust way to iterate lines and find the specific block
+        start_idx = -1
+        
+        # Clean lines tuple list: (original_index, clean_text)
+        clean_lines = []
+        for i, line in enumerate(lines):
+            l = line.strip()
+            if l:
+                clean_lines.append((i, l))
+
+        # Find the best starting line for the name
+        best_cand_idx = -1
+        max_score = 0
+
+        for idx, (original_i, text) in enumerate(clean_lines):
+            # aggressive filter: must be mostly uppercase, > 5 chars
+            if len(text) < 3: continue
+            
+            words = text.split()
+            # if len(words) < 1: continue 
+            
+            # Check if line contains numbers (Visa names usually don't have numbers)
+            if re.search(r'\d', text): continue
+
+            # Check for slashes (often in professions: Student/Not Allowed)
+            if '/' in text: continue
+
+            is_upper = True
+            has_excluded = False
+            
+            # Check for excluded words
+            for w in words:
+                clean_w = re.sub(r'[^A-Z]', '', w.upper())
+                if clean_w in excluded:
+                    has_excluded = True
+                    break
+            
+            if has_excluded: continue
+
+            # Check casing (allow some OCR noise, but mostly upper)
+            upper_chars = sum(1 for c in text if c.isupper())
+            total_chars = len(text)
+            if total_chars > 0 and (upper_chars / total_chars) < 0.5:
+                 is_upper = False
+            
+            if is_upper:
+                # Score candidates: Length + Position (prefer after Passport/Header)
+                score = len(text)
+                # Boost if previous line had "Passport" or "Accompanied"
+                if idx > 0:
+                    prev_text = clean_lines[idx-1][1].upper()
+                    if 'PASSPORT' in prev_text or 'ACCOMPANIED' in prev_text:
+                        score += 50
+                
+                if score > max_score:
+                    max_score = score
+                    best_cand_idx = idx
+
+        if best_cand_idx != -1:
+            # We found the start line. Now check next lines for continuation.
+            final_name_parts = [clean_lines[best_cand_idx][1]]
+            
+            current_idx = best_cand_idx + 1
+            while current_idx < len(clean_lines):
+                next_text = clean_lines[current_idx][1]
+                
+                # Validation for next line:
+                # 1. Must be Upper case
+                # 2. No digits
+                # 3. No excluded keywords (Profession, Box labels etc.)
+                # 4. No special chars like / that imply profession
+                
+                # Check digits
+                if re.search(r'\d', next_text): 
+                    break
+                
+                # Check for slashes
+                if '/' in next_text:
+                    break
+
+                # Check excluded
+                has_keywords = False
+                for w in next_text.split():
+                    clean_w = re.sub(r'[^A-Z]', '', w.upper())
+                    if clean_w in excluded:
+                        has_keywords = True
+                        break
+                if has_keywords:
+                    break
+
+                # Check casing
+                u_chars = sum(1 for c in next_text if c.isupper())
+                t_chars = len(next_text)
+                if t_chars > 0 and (u_chars / t_chars) < 0.5:
+                    break # Likely Arabic or noise
+
+                # It looks like a name part
+                final_name_parts.append(next_text)
+                current_idx += 1
+            
+            name_val = " ".join(final_name_parts)
+
     if name_val:
-        # Remove any trailing junk
-        name_val = re.sub(r'\s*(ame|Profession|HOUSE\s*WIFE|Employer).*$', '', name_val, flags=re.IGNORECASE)
+        # Final cleanup
         name_val = clean(name_val)
-        
-        # Validate: should be 2-4 words, each at least 2 chars, no common false positives
-        words = name_val.split()
-        excluded_words = {'UNITED', 'ARAB', 'EMIRATES', 'HOUSE', 'WIFE', 'PROFESSION', 'EMPLOYER', 'PASSPORT', 'NUMBER'}
-        
-        if (2 <= len(words) <= 4 and 
-            all(len(w) >= 2 for w in words) and 
-            not any(w.upper() in excluded_words for w in words)):
-            data['employer_name'] = name_val
-
-
-
-
-    # ---------------- Dates: Issue / Expiry ----------------
-    date_rx = r'(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})'
-
-    def normalize_date(s: str) -> str:
-        s = clean(s).replace('-', '/')
-        parts = s.split('/')
-        if len(parts) == 3:
-            if len(parts[0]) == 4:   
-                y, m, d = parts
-            else:                    
-                d, m, y = parts
-                if len(y) == 2:
-                    y = f"{2000+int(y):04d}" if int(y) < 30 else f"{1900+int(y):04d}"
-            try:
-                return f"{int(y):04d}/{int(m):02d}/{int(d):02d}"
-            except:
-                return s
-        return s
-
-    # labeled first, English + Arabic, allow a bit of junk between label and digits
-    issue_match = re.search(r'(?i)(?:Issu(?:e|ing)\s*Date|Date\s*of\s*Issue|تاريخ\s*الإصدار)[^\d]{0,12}' + date_rx, t)
-    exp_match   = re.search(r'(?i)(?:Expiry\s*Date|Expires|تاريخ\s*الانتهاء)[^\d]{0,12}' + date_rx, t)
-
-    if issue_match:
-        data['issuing_date'] = normalize_date(issue_match.group(1))
-    if exp_match:
-        data['expiry_date'] = normalize_date(exp_match.group(1))
-
-    # fallback: pick earliest and latest reasonable dates in the text
-    if 'issuing_date' not in data or 'expiry_date' not in data:
-        all_dates = [normalize_date(d) for d in re.findall(date_rx, t)]
-        def year_ok(ds):
-            try:
-                y = int(ds.split('/')[0])
-                return 2000 <= y <= 2100
-            except:
-                return False
-        cand = sorted(set([d for d in all_dates if year_ok(d)]))
-        if cand:
-            data.setdefault('issuing_date', cand[0])
-            data.setdefault('expiry_date', cand[-1])
+        # Store in employer_name as per legacy mapping
+        data['employer_name'] = name_val
+        data['full_name'] = name_val 
 
     return data
 
@@ -720,6 +971,8 @@ from django.http import JsonResponse
 # @api_view(['POST'])
 # @authentication_classes([TokenAuthentication])
 # @permission_classes([IsAuthenticated])
+
+
 @api_view(['POST'])
 @authentication_classes([])   # ⬅️ disable auth
 @permission_classes([AllowAny])
@@ -727,63 +980,66 @@ def uae_visa_upload(request):
     """
     Handles UAE Visa uploads (image/pdf) using OCR.space API.
     """
+    print(f"--- [VISA] Request Received ---")
     f = request.FILES.get('file')
     if not f:
+        print(f"--- [VISA] Error: No file uploaded ---")
         return JsonResponse({"error": "No file uploaded"}, status=400)
 
     name = (f.name or "").lower()
+    print(f"--- [VISA] File: {name} ({f.size} bytes) ---")
     is_pdf = name.endswith(".pdf") or (f.content_type == "application/pdf")
 
     # OCR process
+    print(f"--- [VISA] Starting OCR processing (PDF: {is_pdf})... ---")
     if is_pdf:
         text, code, err = ocr_space_pdf_all_pages(f)
     else:
         text, code, err = ocr_space_file_multi_lang(f, False)
 
     if code != 0:
+        print(f"--- [VISA] OCR Failed: {err} ---")
         return JsonResponse({"error": f"OCR failed: {err or 'unknown error'}"}, status=500)
+    
+    print(f"--- [VISA] OCR Success. Text length: {len(text)} chars ---")
+    print(f"--- [VISA] Parsing fields... ---")
 
     fields = parse_uae_visa_fields(text or "")
+    print(f"--- [VISA] Extracted Fields: {fields.keys()} ---")
 
     # Save record
-    record = UAEDocumentVisa.objects.create(
-        id_number=fields.get("id_number"),
-        file_number=fields.get("file_number"),
-        passport_no=fields.get("passport_no"),
-        employer_name=fields.get("employer_name"),
-        uid_no=fields.get("uid_no"),
-        issuing_date=fields.get("issuing_date"),
-        expiry_date=fields.get("expiry_date"),
-        raw_text=text
-    )
+    try:
+        record = UAEDocumentVisa.objects.create(
+            id_number=fields.get("id_number"),
+            file_number=fields.get("file_number"),
+            passport_no=fields.get("passport_no"),
+            employer_name=fields.get("employer_name"),
+            uid_no=fields.get("uid_no"),
+            issuing_date=fields.get("issuing_date"),
+            expiry_date=fields.get("expiry_date"),
+            raw_text=text
+        )
+        print(f"--- [VISA] Record Saved: ID {record.id} ---")
 
-    return JsonResponse({
-        "ok": True,
-        "record_id": record.id,
-        "fields": {
-            "id_number": record.id_number,
-            "file_number": record.file_number,
-            "passport_no": record.passport_no,
-            "employer_name": record.employer_name,
-            "uid_no": record.uid_no,
-            "issuing_date": record.issuing_date,
-            "expiry_date": record.expiry_date,
-        },
-        "raw_text": record.raw_text[:2000]  # print trimmed full OCR result
-    }, status=200)
+        return JsonResponse({
+            "ok": True,
+            "record_id": record.id,
+            "fields": {
+                "id_number": record.id_number,
+                "file_number": record.file_number,
+                "passport_no": record.passport_no,
+                "employer_name": record.employer_name,
+                "full_name": fields.get("full_name"), # Explicitly return extracted full name
+                "uid_no": record.uid_no,
+                "issuing_date": record.issuing_date,
+                "expiry_date": record.expiry_date,
+            },
+            "raw_text": record.raw_text[:2000]  # print trimmed full OCR result
+        }, status=200)
+    except Exception as e:
+         print(f"--- [VISA] Failed to save record: {e} ---")
+         return JsonResponse({"error": f"Database error: {str(e)}"}, status=500)
 
-
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
-from django.http import JsonResponse
-
-# @csrf_exempt
-# @api_view(["POST"])
-# @permission_classes([AllowAny])
-# @api_view(['POST'])
-# @authentication_classes([TokenAuthentication])
-# @permission_classes([IsAuthenticated])
 @api_view(['POST'])
 @authentication_classes([])   # ⬅️ disable auth
 @permission_classes([AllowAny])
@@ -794,29 +1050,38 @@ def emirates_id_upload_test(request):
     """
     from .ocr_space import ocr_space_file_multi_lang
 
+    print(f"--- [EID] Request Received ---")
     files = request.FILES.getlist("file")
     if not files:
+        print(f"--- [EID] Error: No files received ---")
         return JsonResponse({"error": "No files received"}, status=400)
 
+    print(f"--- [EID] Processing {len(files)} files ---")
     combined_text = ""
-    for file_obj in files:
+    for i, file_obj in enumerate(files):
+        print(f"--- [EID] Processing File {i+1}: {file_obj.name} ---")
         is_pdf = file_obj.name.lower().endswith(".pdf")
         text, code, err = ocr_space_file_multi_lang(file_obj, is_pdf)
 
         if code != 0:
+            print(f"--- [EID] OCR Failed for {file_obj.name}: {err} ---")
             return JsonResponse({"error": f"OCR failed: {err}"}, status=500)
-
+        
+        print(f"--- [EID] OCR Success for {file_obj.name}. Length: {len(text)} ---")
         combined_text += " " + text
 
     # Extract data using your original logic
+    print(f"--- [EID] Parsing fields... ---")
     front_fields = parse_fields(combined_text)
-
+    
     try:
         back_fields = parse_back_side_fields(combined_text)
-    except:
+    except Exception as e:
+        print(f"--- [EID] Warning: Back side parsing error: {e} ---")
         back_fields = {}
 
     merged = {**front_fields, **back_fields}
+    print(f"--- [EID] Fields Extracted: {merged.keys()} ---")
 
     # FILTERED FINAL OUTPUT (Only fields you want)
     filtered = {

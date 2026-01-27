@@ -89,6 +89,91 @@ class EmiratesIDExtractor:
         if not text: return ""
         return " ".join(text.split())
 
+    def _enhance_name_extraction(self, extracted_name: str, full_text: str) -> str:
+        """
+        Enhances name extraction by checking for title case names on previous lines.
+        Handles cases where the name is split across lines like:
+        - "Ismaeel Sajaad Muhammad Sajaad Manakkat"
+        - "Name: Thekke Peedikayil"
+        """
+        if not extracted_name or not full_text:
+            return extracted_name
+        
+        # Normalize text and split into lines
+        normalized = full_text.replace('\r', '\n')
+        lines = [l.strip() for l in normalized.splitlines() if l.strip()]
+        
+        # Find the line containing the extracted name
+        # Prefer lines with "Name:" label, but fall back to any line containing the name
+        name_line_idx = -1
+        for idx, line in enumerate(lines):
+            # Check if extracted name appears in this line (case-insensitive)
+            if extracted_name.lower() in line.lower():
+                # If this line has "Name:" label, use it immediately (most likely the correct one)
+                if 'name:' in line.lower():
+                    name_line_idx = idx
+                    break
+                # Otherwise, remember the first match but keep searching
+                elif name_line_idx == -1:
+                    name_line_idx = idx
+        
+        # If we found the name line and there's a previous line, check it
+        if name_line_idx > 0:
+            prev_line = lines[name_line_idx - 1]
+            
+            # List of terms that should NEVER be part of a name
+            invalid_terms = [
+                'property owner', 'occupation', 'employer', 'sponsor', 'investors',
+                'entrepreneurs', 'specialized', 'file', 'number', 'date', 'expiry',
+                'issuing', 'nationality', 'gender', 'sex', 'male', 'female',
+                'resident', 'identity', 'card', 'id', 'passport', 'signature',
+                'united', 'arab', 'emirates', 'federal', 'authority'
+            ]
+            
+            # Check if previous line looks like a name part:
+            # 1. Has at least 2 words (names are usually multi-word)
+            # 2. No digits
+            # 3. No invalid keywords
+            # 4. Starts with uppercase (title case) or is mostly uppercase
+            # 5. Mostly letters (not special characters)
+            
+            words = prev_line.split()
+            if len(words) >= 2:  # At least 2 words
+                # Check for digits
+                if not any(ch.isdigit() for ch in prev_line):
+                    # Check for invalid terms
+                    prev_lower = prev_line.lower()
+                    if not any(term in prev_lower for term in invalid_terms):
+                        # Check if it starts with uppercase (title case) or is mostly uppercase
+                        starts_upper = prev_line and prev_line[0].isupper()
+                        upper_chars = sum(1 for c in prev_line if c.isupper())
+                        total_letters = sum(1 for c in prev_line if c.isalpha())
+                        
+                        # Accept if: starts with uppercase AND looks like title case or all-caps
+                        # Title case: roughly one uppercase per word (e.g., 5 words = ~5 uppercase letters)
+                        # All-caps: most letters are uppercase (70%+)
+                        if total_letters > 0:
+                            upper_ratio = upper_chars / total_letters
+                            word_count = len(words)
+                            
+                            # Title case check: uppercase count should be roughly equal to word count
+                            # (each word typically starts with one uppercase letter)
+                            # Allow some variance: between 0.7x and 2x word count
+                            is_title_case = (
+                                starts_upper and 
+                                word_count * 0.7 <= upper_chars <= word_count * 2
+                            )
+                            # All-caps check: mostly uppercase
+                            is_mostly_upper = upper_ratio >= 0.7
+                            
+                            if is_title_case or is_mostly_upper:
+                                # Combine previous line with extracted name
+                                combined = f"{prev_line} {extracted_name}"
+                                logger.info(f"Enhanced name extraction: '{extracted_name}' -> '{combined}'")
+                                return combined
+        
+        return extracted_name
+
     def parse_mrz(self, text: str) -> Dict[str, Any]:
         """
         Attempts to extract data from the Machine Readable Zone (MRZ) usually found 
@@ -146,11 +231,12 @@ class EmiratesIDExtractor:
 
     def process_pdf(self, file_path_or_stream, employment_type='Employee') -> Dict[str, Any]:
         """
-        Main extraction logic.
+        Main extraction logic using standardized robust parser.
         """
         # 1. OCR Processing
         ocr_result = self.ocr_file(file_path_or_stream, engine=2)
         
+        # If engine 2 fails or returns no text, try engine 1
         if not ocr_result.get('ParsedResults'):
             logger.warning("Engine 2 failed, retrying with Engine 1...")
             ocr_result = self.ocr_file(file_path_or_stream, engine=1)
@@ -160,10 +246,84 @@ class EmiratesIDExtractor:
              return {"error": "OCR failed to extract text."}
 
         # 2. Build Corpus
+        # Preserve newlines for multi-line name detection (like Document Test)
         full_text_corpus = ""
         for page in parsed_results:
-            full_text_corpus += " " + self.clean_text(page.get('ParsedText', ''))
+            page_text = page.get('ParsedText', '')
+            if page_text:
+                # Normalize line endings but preserve line structure
+                page_text = page_text.replace('\r', '\n')
+                full_text_corpus += "\n" + page_text
 
+        # 3. Use Robust Parser (imported from document_tests)
+        try:
+            from document_tests.views import parse_fields, parse_back_side_fields
+            
+            # Extract front and back fields
+            front_fields = parse_fields(full_text_corpus)
+            back_fields = parse_back_side_fields(full_text_corpus)
+            
+            # Merge results (Back fields override front if duplicate, usually clearer)
+            extracted_data = {**front_fields, **back_fields}
+            
+            # Enhanced name extraction: Handle title case names on previous line
+            # This fixes cases where name is split like:
+            # "Ismaeel Sajaad Muhammad Sajaad Manakkat"
+            # "Name: Thekke Peedikayil"
+            if extracted_data.get('name'):
+                extracted_data['name'] = self._enhance_name_extraction(
+                    extracted_data.get('name'), 
+                    full_text_corpus
+                )
+            
+            # Helper to convert various date formats to YYYY-MM-DD
+            def clean_date(date_str):
+                if not date_str: return None
+                try:
+                    # Case 1: DD/MMM/YYYY (e.g. 14/Mar/1990) - output from parse_fields
+                    if re.match(r'\d{1,2}/[A-Za-z]{3}/\d{4}', date_str):
+                        return datetime.strptime(date_str, "%d/%b/%Y").strftime("%Y-%m-%d")
+                    
+                    # Case 2: DD/MM/YYYY
+                    if re.match(r'\d{1,2}/\d{1,2}/\d{4}', date_str):
+                        return datetime.strptime(date_str, "%d/%m/%Y").strftime("%Y-%m-%d")
+                    
+                    # Case 3: YYYY-MM-DD (Already correct)
+                    if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                        return date_str
+                        
+                    return date_str
+                except Exception as e:
+                    logger.warning(f"Date conversion failed for {date_str}: {e}")
+                    return None # Return None if conversion fails to avoid serializer errors
+
+            # Map robust parser keys to expected schema
+            final_data = {
+                'emirates_id': extracted_data.get('emirates_id'),
+                'full_name': extracted_data.get('name'),
+                'date_of_birth': clean_date(extracted_data.get('dob')),
+                'issuing_date': clean_date(extracted_data.get('issuing_date')),
+                'expiry_date': clean_date(extracted_data.get('expiry_date')),
+                'nationality': extracted_data.get('nationality'),
+                'gender': extracted_data.get('gender'),
+                'issuing_place': extracted_data.get('issuing_place'),
+                'occupation': extracted_data.get('occupation'),
+                'sponsor_name': extracted_data.get('employer'), # Map employer to sponsor_name preference
+            }
+            
+            # Fallback for Sponsor Name if missing
+            if not final_data.get('sponsor_name'):
+                final_data['sponsor_name'] = extracted_data.get('sponsor')
+
+            return final_data
+
+        except ImportError:
+            # Fallback to legacy regex method if import fails
+            logger.error("Could not import parse_fields from document_tests. Using legacy method.")
+            return self._legacy_regex_extraction(full_text_corpus)
+
+    def _legacy_regex_extraction(self, full_text_corpus):
+        """Legacy method kept as fail-safe"""
         extracted_data = {}
 
         # 3. Strategy A: MRZ Extraction (Most Reliable)
@@ -212,30 +372,22 @@ class EmiratesIDExtractor:
             extracted_data['issuing_place'] = place_match.group(1).strip() if place_match else 'Dubai'
 
         # Sponsor/Employer
-        # Logic: If employment type is Employee, prioritize Employer field. If Dependent, prioritize Sponsor.
         employer_match = self.labels['employer'].search(full_text_corpus)
-        
         if employer_match:
             sponsor_val = employer_match.group(1).strip()
-            # Cleanup: Remove trailing noise if regex over-captured
             if len(sponsor_val) > 3:
                 extracted_data['sponsor_name'] = sponsor_val
 
-        # 5. Date Parsing (Crucial Update)
-        # We collect all dates found in text and use heuristics if MRZ didn't give us DOB/Expiry
-        
+        # 5. Date Parsing
         all_dates = []
         raw_date_matches = self.labels['dates'].findall(full_text_corpus)
         
         for match in raw_date_matches:
-            # match is a tuple because of the OR (|) in regex
             date_str = match[0] if match[0] else match[1]
             try:
-                # Determine format
                 if '-' in date_str: date_str = date_str.replace('-', '/')
                 if '.' in date_str: date_str = date_str.replace('.', '/')
                 
-                # Check if YYYY is first or last
                 parts = date_str.split('/')
                 if len(parts[0]) == 4: # YYYY/MM/DD
                     dt = datetime.strptime(date_str, "%Y/%m/%d")
@@ -246,7 +398,6 @@ class EmiratesIDExtractor:
             except ValueError:
                 continue
 
-        # Sort dates: Oldest is DOB, Newest is Expiry, Middle is Issue
         if all_dates:
             unique_dates = sorted(list(set(all_dates)))
             
@@ -254,14 +405,10 @@ class EmiratesIDExtractor:
                 extracted_data['date_of_birth'] = unique_dates[0].strftime("%Y-%m-%d")
             
             if 'expiry_date' not in extracted_data and len(unique_dates) > 1:
-                # Usually the furthest date in the future
                 extracted_data['expiry_date'] = unique_dates[-1].strftime("%Y-%m-%d")
                 
             if 'issuing_date' not in extracted_data:
-                # Heuristic: If we have 3 dates, middle is likely issue. 
-                # If we have 2 dates (DOB, Expiry), Issue might be missing or same as one (unlikely).
                 if len(unique_dates) >= 3:
-                    # Finds the date that is NOT DOB and NOT Expiry
                     issue_candidates = [d for d in unique_dates if d != unique_dates[0] and d != unique_dates[-1]]
                     if issue_candidates:
                         extracted_data['issuing_date'] = issue_candidates[0].strftime("%Y-%m-%d")

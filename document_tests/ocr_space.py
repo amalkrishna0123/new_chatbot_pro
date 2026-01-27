@@ -70,25 +70,39 @@ def ocr_space_file(file_obj, is_pdf=False, language="eng"):
             "isSearchablePdfHideTextLayer": "false",
         }
 
-        resp = requests.post(OCR_ENDPOINT, files=files, data=data, timeout=90)
-        
-        if resp.status_code != 200:
-            return "", 2, f"HTTP {resp.status_code}"
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(OCR_ENDPOINT, files=files, data=data, timeout=120)
+                
+                if resp.status_code != 200:
+                    if attempt < max_retries - 1:
+                        continue
+                    return "", 2, f"HTTP {resp.status_code}"
 
-        j = resp.json()
-        
-        if j.get("IsErroredOnProcessing"):
-            return "", 4, j.get("ErrorMessage", "Unknown OCR.space error")
+                j = resp.json()
+                
+                if j.get("IsErroredOnProcessing"):
+                    if attempt < max_retries - 1:
+                        continue
+                    return "", 4, j.get("ErrorMessage", "Unknown OCR.space error")
 
-        parsed_results = j.get("ParsedResults", [])
-        if not parsed_results:
-            return "", 5, "No OCR results returned"
-            
-        parsed_text = parsed_results[0].get("ParsedText", "")
-        return parsed_text.strip(), 0, ""
-        
-    except requests.RequestException as exc:
-        return "", 1, f"Network error: {exc}"
+                parsed_results = j.get("ParsedResults", [])
+                if not parsed_results:
+                    if attempt < max_retries - 1:
+                        continue
+                    return "", 5, "No OCR results returned"
+                    
+                parsed_text = parsed_results[0].get("ParsedText", "")
+                return parsed_text.strip(), 0, ""
+
+            except requests.RequestException as exc:
+                if attempt < max_retries - 1:
+                    continue
+                return "", 1, f"Network error: {exc}"
+            except Exception as exc:
+                return "", 6, f"Processing error: {exc}"
+
     except Exception as exc:
         return "", 6, f"Processing error: {exc}"
 
@@ -187,29 +201,40 @@ def ocr_space_file_multi_lang(file_obj, is_pdf=False):
     Try OCR with PaddleOCR first (FREE), then fallback to OCR.space if needed.
     Stop early if we get substantial text or detect MRZ.
     """
+    print(f"--- [OCR] Logic Start (PDF: {is_pdf}) ---")
     best_text, best_code, best_err = "", 5, "No OCR results returned"
     
     # First try PaddleOCR (FREE, on your own server)
     try:
+        print(f"--- [OCR] Attempting PaddleOCR... ---")
         text, code, err = paddle_ocr_file(file_obj, is_pdf)
+        print(f"--- [OCR] PaddleOCR Result: Code={code}, TextLen={len(text)} ---")
+        
         if code == 0 and len(text.strip()) > 40:
+            print(f"--- [OCR] PaddleOCR accepted (substantial text) ---")
             return text, code, err
         if code == 0 and _has_mrz(text):
+            print(f"--- [OCR] PaddleOCR accepted (MRZ detected) ---")
             return text, code, err
         if code == 0 and len(text.strip()) > 0:
             best_text, best_code, best_err = text, code, err
     except Exception as e:
         # PaddleOCR failed, continue to OCR.space fallback
+        print(f"--- [OCR] PaddleOCR exception: {e} ---")
         pass
     
     # Fallback to OCR.space if PaddleOCR didn't work well
+    print(f"--- [OCR] Falling back to OCR.space... ---")
     if not best_text or len(best_text.strip()) < 40:
         if is_pdf:
+            print(f"--- [OCR] OCR.space (PDF Mode) ---")
             txt, code, err = ocr_space_pdf_all_pages(file_obj)
             if code == 0 and (len(txt.strip()) > 40 or _has_mrz(txt)):
+                print(f"--- [OCR] OCR.space PDF accepted. Len: {len(txt)} ---")
                 return txt, code, err
             if code == 0 and len(txt.strip()) > 0:
                 if len(txt.strip()) > len(best_text.strip()):
+                    print(f"--- [OCR] OCR.space PDF better than Paddle. Len: {len(txt)} ---")
                     best_text, best_code, best_err = txt, code, err
         else:
             # For images, cycle languages
@@ -219,8 +244,11 @@ def ocr_space_file_multi_lang(file_obj, is_pdf=False):
             ]
             
             for lang in lang_candidates:
+                print(f"--- [OCR] OCR.space Attempt Lang: {lang} ---")
                 file_obj.seek(0)
                 txt, code, err = ocr_space_file(file_obj, False, lang)
+                print(f"--- [OCR] Result: Code={code}, Len={len(txt or '')} ---")
+                
                 if code == 0 and len((txt or "").strip()) > 40:
                     return txt, code, err
                 if code == 0 and _has_mrz(txt):
@@ -228,6 +256,7 @@ def ocr_space_file_multi_lang(file_obj, is_pdf=False):
                 if code == 0 and len(txt.strip()) > len(best_text.strip()):
                     best_text, best_code, best_err = txt, code, err
     
+    print(f"--- [OCR] Final Result Len: {len(best_text)} ---")
     return best_text.strip(), best_code, best_err
 
 def ocr_space_pdf_all_pages(file_obj):
@@ -255,11 +284,21 @@ def ocr_space_pdf_all_pages(file_obj):
             "isSearchablePdfHideTextLayer": "false",
         }
 
-        # First try with English
-        resp = requests.post(OCR_ENDPOINT, files=files, data=data, timeout=90)
+        # First try with English with retries
+        max_retries = 3
+        resp = None
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(OCR_ENDPOINT, files=files, data=data, timeout=120)
+                if resp.status_code == 200:
+                    break
+            except requests.RequestException:
+                if attempt == max_retries - 1:
+                     raise
         
-        if resp.status_code != 200:
-            return "", 2, f"HTTP {resp.status_code}"
+        if not resp or resp.status_code != 200:
+            status = resp.status_code if resp else "No Response"
+            return "", 2, f"HTTP {status}"
 
         j = resp.json()
         

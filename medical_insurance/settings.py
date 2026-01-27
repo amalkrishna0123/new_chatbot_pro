@@ -91,23 +91,23 @@ WSGI_APPLICATION = 'medical_insurance.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / os.getenv('DATABASE_NAME', 'db.sqlite3'),
-    }
-}
-
 # DATABASES = {
 #     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'restapinew',
-#         'USER': 'chatuser',
-#         'PASSWORD': 'strongpassword',
-#         'HOST': 'localhost',
-#         'PORT': '5432',
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / os.getenv('DATABASE_NAME', 'db.sqlite3'),
 #     }
 # }
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'restapinew',
+        'USER': 'chatuser',
+        'PASSWORD': 'strongpassword',
+        'HOST': 'localhost',
+        'PORT': '5432',
+    }
+}
 
 
 # Password validation
@@ -197,6 +197,8 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "https://keralahome.in",
     "https://www.keralahome.in",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True
@@ -207,6 +209,8 @@ CORS_ALLOW_CREDENTIALS = False
 CSRF_TRUSTED_ORIGINS = [
     "https://keralahome.in",
     "https://www.keralahome.in",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
 ]
 
 # Email Configuration
